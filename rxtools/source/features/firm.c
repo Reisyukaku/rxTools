@@ -19,8 +19,6 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <elf.h>
-#include <reboot.h>
 #include "firm.h"
 #include "mpcore.h"
 #include "hid.h"
@@ -42,27 +40,6 @@ const wchar_t *firmPathFmt= L"" FIRM_PATH_FMT;
 const wchar_t *firmPatchPathFmt = L"" FIRM_PATCH_PATH_FMT;
 
 unsigned int emuNandMounted = 0;
-_Noreturn void (* const _softreset)() = (void *)0x080F0000;
-
-_Noreturn void execReboot(uint32_t, void *, uintptr_t, const Elf32_Shdr *);
-
-static FRESULT loadExecReboot()
-{
-	FIL fd;
-	FRESULT r;
-	UINT br;
-
-	r = f_open(&fd, L"" SYS_PATH "/reboot.bin", FA_READ);
-	if (r != FR_OK)
-		return r;
-
-	r = f_read(&fd, (void*)0x080F0000, 0x8000, &br);
-	if (r != FR_OK)
-		return r;
-
-	f_close(&fd);
-	_softreset();
-}
 
 static int loadFirm(wchar_t *path, UINT *fsz)
 {
@@ -146,8 +123,7 @@ uint8_t *decryptFirmTitleNcch(uint8_t* title, size_t *size) {
 	return firm;
 }
 
-uint8_t *decryptFirmTitle(uint8_t *title, size_t size, size_t *firmSize, uint8_t key[16])
-{
+uint8_t *decryptFirmTitle(uint8_t *title, size_t size, size_t *firmSize, uint8_t key[16]){
 	aes_ctr ctr = {{{0}}, AES_CNT_INPUT_BE_NORMAL};
 	aes_set_key(&(aes_key){(aes_key_data*)key, AES_CNT_INPUT_BE_NORMAL, 0x2C, NORMALKEY});
 	aes(title, title, size, &ctr, AES_CBC_DECRYPT_MODE | AES_CNT_INPUT_BE_NORMAL | AES_CNT_OUTPUT_BE_NORMAL);
@@ -155,56 +131,12 @@ uint8_t *decryptFirmTitle(uint8_t *title, size_t size, size_t *firmSize, uint8_t
 	return decryptFirmTitleNcch(title, firmSize);
 }
 
-static void setAgbBios()
-{
-	File agb_firm;
-	wchar_t path[_MAX_LFN];
-	unsigned char svc = (cfgs[CFG_AGB_BIOS].val.i ? 0x26 : 0x01);
-
-	getFirmPath(path, TID_CTR_AGB_FIRM);
-	if (FileOpen(&agb_firm, path, 0))
-	{
-		FileWrite(&agb_firm, &svc, 1, 0xD7A12);
-		FileClose(&agb_firm);
-	}
-}
-
-int rxMode(int_fast8_t drive)
-{
-	wchar_t path[64];
-	const char *shstrtab;
-	const wchar_t *msg;
-	uint8_t keyx[16];
-	uint32_t tid;
-	int r, sector;
-	Elf32_Ehdr *ehdr;
-	Elf32_Shdr *shdr, *btm;
-	void *keyxArg;
-	FIL fd;
-	UINT br, fsz;
-
-	if (drive > 0) {
-		sector = checkNAND(drive);
-		if (sector == 0) {
-			ConsoleInit();
-			ConsoleSetTitle(L"EMUNAND NOT FOUND!");
-			print(L"The emunand was not found on\n");
-			print(L"your SDCard. \n");
-			print(L"\n");
-			print(L"Press A to boot SYSNAND\n");
-			ConsoleShow();
-
-			WaitForButton(keys[KEY_A].mask);
-
-//			swprintf(path, _MAX_LFN, L"/rxTools/Theme/%u/boot.bin",
-//				cfgs[CFG_THEME].val.i);
-//			DrawSplash(&bottomScreen, path);
-		}
-	} else
-		sector = 0;
-
-	r = getMpInfo();
-	switch (r) {
+void rxMode(uint8_t disk){
+    wchar_t path[64];
+    uint32_t tid;
+    UINT fsz;
+    
+	switch (getMpInfo()) {
 		case MPINFO_KTR:
 			tid = TID_KTR_NATIVE_FIRM;
 			break;
@@ -214,125 +146,23 @@ int rxMode(int_fast8_t drive)
 			break;
 
 		default:
-			msg = L"Unknown Platform: %d";
-			goto fail;
+            return;
 	}
 
-	setAgbBios();
-
-	if (sysver < 7 && f_open(&fd, L"slot0x25KeyX.bin", FA_READ) == FR_OK) {
-		f_read(&fd, keyx, sizeof(keyx), &br);
-		f_close(&fd);
-		keyxArg = keyx;
-	} else
-		keyxArg = NULL;
-
-	getFirmPath(path, tid);
-	r = loadFirm(path, &fsz);
-	if (r) {
-		msg = L"Failed to load NATIVE_FIRM: %d\n"
-			L"Reboot rxTools and try again.\n";
-		goto fail;
-	}
-
-	((FirmHdr *)FIRM_ADDR)->arm9Entry = 0x0801B01C;
-
-	getFirmPatchPath(path, tid);
-	r = f_open(&fd, path, FA_READ);
-	if (r != FR_OK)
-		goto patchFail;
-
-	r = f_read(&fd, (void *)PATCH_ADDR, PATCH_SIZE, &br);
-	if (r != FR_OK)
-		goto patchFail;
-
-	f_close(&fd);
-
-	ehdr = (void *)PATCH_ADDR;
-	shdr = (void *)(PATCH_ADDR + ehdr->e_shoff);
-	shstrtab = (char *)PATCH_ADDR + shdr[ehdr->e_shstrndx].sh_offset;
-	for (btm = shdr + ehdr->e_shnum; shdr != btm; shdr++) {
-		if (!strcmp(shstrtab + shdr->sh_name, ".patch.p9.reboot.body")) {
-			execReboot(sector, keyxArg, ehdr->e_entry, shdr);
-			__builtin_unreachable();
-		}
-	}
-
-	msg = L".patch.p9.reboot.body not found\n"
-		L"Please check your installation.\n";
-fail:
-	ConsoleInit();
-	ConsoleSetTitle(L"rxMode");
-	print(msg, r);
-	print(L"\n");
-	print(strings[STR_PRESS_BUTTON_ACTION],
-		strings[STR_BUTTON_A], strings[STR_CONTINUE]);
-	ConsoleShow();
-	WaitForButton(keys[KEY_A].mask);
-
-	return r;
-
-patchFail:
-	msg = L"Failed to load the patch: %d\n"
-		L"Check your installation.\n";
-	goto fail;
-}
-
-//Just patches signatures check, loads in sysnand
-#define PASTA_FIRM_SEEK_SIZE 0xF0000
-
-int PastaMode() {
-	/*PastaMode is ready for n3ds BUT there's an unresolved bug which affects nand reading functions, like nand_readsectors(0, 0xF0000 / 0x200, firm, FIRM0);*/
-
-	uint8_t *firm = (void*)FIRM_ADDR;
-
-	nand_readsectors(0, PASTA_FIRM_SEEK_SIZE / NAND_SECTOR_SIZE, firm, SYSNAND, NAND_PARTITION_FIRM0);
-	if (*(uint32_t*)firm != FIRM_MAGIC)
-		nand_readsectors(0, PASTA_FIRM_SEEK_SIZE / NAND_SECTOR_SIZE, firm, SYSNAND, NAND_PARTITION_FIRM1);
-
-	if (getMpInfo() == MPINFO_CTR) {
-		//o3ds patches
-		uint8_t sign1[] = { 0xC1, 0x17, 0x49, 0x1C, 0x31, 0xD0, 0x68, 0x46, 0x01, 0x78, 0x40, 0x1C, 0x00, 0x29, 0x10, 0xD1 };
-		uint8_t sign2[] = { 0xC0, 0x1C, 0x76, 0xE7, 0x20, 0x00, 0x74, 0xE7, 0x22, 0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F };
-		uint8_t patch1[] = { 0x00, 0x20, 0x4E, 0xB0, 0x70, 0xBD };
-		uint8_t patch2[] = { 0x00, 0x20 };
-
-		for (size_t i = 0; i < PASTA_FIRM_SEEK_SIZE; i++) {
-			if (!memcmp(firm + i, sign1, sizeof(sign1)))
-				memcpy(firm + i, patch1, sizeof(patch1));
-			if (!memcmp(firm + i, sign2, sizeof(sign2)))
-				memcpy(firm + i, patch2, sizeof(patch2));
-		}
-	} else {
-		//new 3ds patches
-		decryptFirmKtrArm9((void *)FIRM_ADDR);
-		uint8_t patch0[] = { 0x00, 0x20, 0x3B, 0xE0 };
-		uint8_t patch1[] = { 0x00, 0x20, 0x08, 0xE0 };
-		memcpy((uint32_t*)(FIRM_ADDR + 0xB39D8), patch0, sizeof(patch0));
-		memcpy((uint32_t*)(FIRM_ADDR + 0xB9204), patch1, sizeof(patch1));
-	}
-
-	return loadExecReboot();
+    getFirmPath(path, tid);
+    loadFirm(path, &fsz);
+    
+	unsigned arm9Entry = 0x0801B01C;
+	((void (*)())arm9Entry)();
 }
 
 void FirmLoader(wchar_t *firm_path){
 
 	UINT fsz;
-	if (loadFirm(firm_path, &fsz))
-	{
+	if (loadFirm(firm_path, &fsz)){
 		ConsoleInit();
 		ConsoleSetTitle(strings[STR_LOAD], strings[STR_FIRMWARE_FILE]);
 		print(strings[STR_WRONG], L"", strings[STR_FIRMWARE_FILE]);
-		print(strings[STR_PRESS_BUTTON_ACTION], strings[STR_BUTTON_A], strings[STR_CONTINUE]);
-		ConsoleShow();
-		WaitForButton(keys[KEY_A].mask);
-		return;
-	}
-		if (loadExecReboot())
-	{
-		ConsoleInit();
-		ConsoleSetTitle(strings[STR_LOAD], strings[STR_FIRMWARE_FILE]);
-		print(strings[STR_ERROR_LAUNCHING], strings[STR_FIRMWARE_FILE]);
 		print(strings[STR_PRESS_BUTTON_ACTION], strings[STR_BUTTON_A], strings[STR_CONTINUE]);
 		ConsoleShow();
 		WaitForButton(keys[KEY_A].mask);
