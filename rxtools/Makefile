@@ -45,7 +45,7 @@ CCOBJS := $(addprefix $(BUILD)/,main.o features/CTRDecryptor.o \
 	features/AdvancedFileManager.o features/firm.o	\
 	features/padgen.o features/screenshot.o	\
 	lib/fatfs/diskio.o lib/fatfs/ff.o lib/fatfs/option/unicode.o \
-	lib/tmio/tmio.o \
+    lib/tmio/tmio.o \
 	lib/console.o lib/crypto.o lib/draw.o lib/fs.o lib/hid.o lib/lang.o \
 	lib/log.o lib/i2c.o lib/jsmn/jsmn.o lib/menu.o lib/nand.o lib/ncch.o \
 	lib/json.o lib/theme.o lib/tmd.o lib/progress.o lib/cfnt.o \
@@ -59,23 +59,23 @@ $(call DEPDIR,$(BUILD)/rxtools.elf $(OBJS) $(DEPS))
 
 MAKEDEP	= @$(COMPILE.c) -MM $< > $(patsubst $(BUILD)/%.o,$(DEPS_DIR)/%.d,$@)
 
-.PHONY: $(BUILD)/code.bin all clean
+.PHONY: $(BUILD)/code.bin $(BUILD)/arm9loaderhax.bin all clean
 
-$(BUILD)/arm9loaderhax.bin: 
-	@dd if=$(BUILD)/code.bin of=$(BUILD)/arm9loaderhax.bin skip=73728 bs=1 
+$(BUILD)/arm9loaderhax.bin: $(BUILD)/rxtools.bin
+	@cp -av $< $@
 
 $(BUILD)/code.bin: $(BUILD)/rxtools.bin $(BUILD)/CakeHax/D
-	$(call Q,MAKE,CakeHax)$(MAKE) dir_out=../$(dir $@) dir_build=../$(BUILD)/CakeHax name=$(notdir $@) filepath=$(SYS_PATH)/ -C CakeHax bigpayload
-	$(call Q,DD,$@)dd if=$< bs=896k conv=sync,notrunc | dd of=$@ seek=160 conv=notrunc
+	$(MAKE) dir_out=../$(dir $@) dir_build=../$(BUILD)/CakeHax name=$(notdir $@) filepath=$(SYS_PATH)/ -C CakeHax bigpayload
+	dd if=$< of=$@ bs=512 seek=160
 
 %.bin: %.elf
-	$(call Q,OBJCOPY,$@)$(OBJCOPY) -O binary $< $@
+	@$(OBJCOPY) --set-section-flags .bss=alloc,load,contents -O binary $< $@
 
 $(BUILD)/rxtools.elf: $(OBJS)
-	$(call Q,LINK,$@)$(LINK.o) $^ $(OUTPUT_OPTION)
+	$(LINK.o) $^ $(OUTPUT_OPTION)
 
 $(BUILD)/%.o: $(SOURCE)/%.c
-	$(call Q,CC,$@)$(COMPILE.c) $< $(OUTPUT_OPTION)
+	$(COMPILE.c) $< $(OUTPUT_OPTION)
 	$(MAKEDEP)
 
 $(BUILD)/%.o: $(SOURCE)/%.S

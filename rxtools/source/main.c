@@ -224,12 +224,12 @@ void toolsmain() {
 	uint_fast8_t themeFailed = 0;
 
 	preloadStringsA();
-
+    
 	// init screen buffer addresses from const vectors
 	bottomScreen.addr = (uint8_t*)*(uint32_t*)bottomScreen.addr;
 	top1Screen.addr = (uint8_t*)*(uint32_t*)top1Screen.addr;
 	top2Screen.addr = (uint8_t*)*(uint32_t*)top2Screen.addr;
-
+    
 	if (!nandInit() || !FSInit()) return;
 
 	swprintf(path, _MAX_LFN + 1, L"%ls/%ls", rxPath, dataPath);
